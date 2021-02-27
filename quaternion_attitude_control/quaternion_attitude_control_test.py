@@ -77,6 +77,29 @@ def qcontrol_full(q = Quaternion(), qd = Quaternion()):
     # also taking care of the antipodal unit quaternion ambiguity
     return 2 * np.sign(qe[0]+1e-10) * np.array([qe[1], qe[2], qe[3]])
 
+def use_reduced_attitude(q = Quaternion(), qd = Quaternion()):
+    """
+    Check if the control use reduced attitude control logic.
+    /* In the infinitesimal corner case where the vehicle and thrust have the completely opposite direction,
+    * full attitude control anyways generates no yaw input and directly takes the combination of
+    * roll and pitch leading to the correct desired yaw. Ignoring this case would still be totally safe and stable. */
+
+    Params:
+        q: [optional] current body attitude quaternion. Defaults to level.
+        qd: [optional] desired body attitude quaternion setpoint. Defaults to level.
+
+    Returns:
+        boolean
+    """
+    # extract body z-axis and desired body z-axis
+    ez = dcm_z(q)
+    ezd = dcm_z(qd)
+    qd_red = vtoq(ez, ezd)
+    if (abs(qd_red.q[1]) > (1. - 1.e-5) or abs(qd_red.q[2]) > (1. - 1.e-5)):
+        return False
+    else:
+        return True
+
 def qcontrol_reduced(q = Quaternion(), qd = Quaternion(), yw = 1):
     """
     Calculate angular velocity to get from current to desired attitude
@@ -222,14 +245,17 @@ while steps < 1000 and (not np.isclose(p, pd).all() or (q.inverse * qd).degrees 
     plotrotc(q, p)
 
     # run minimal position & velocity control
-    vd = (pd - p)
-    fd = (vd - v)
+    vd = (pd - p)  # velocity setpoint
+    fd = (vd - v)  # acceleration setpoint
     fd += np.array([0,0,1]) # "gravity"
 
     # run attitude control
-    qd = ftoq(fd, yd)
-    thrust = np.dot(fd, dcm_z(q))
-    w = 3*qcontrol_reduced(q, qd, 0.4)
+    qd = ftoq(fd, yd) # rotation position setpoint
+    thrust = np.dot(fd, dcm_z(q)) # thrust vector project on body z-axis in world frame(unit vector).
+    if use_reduced_attitude(q, qd):
+        w = 3*qcontrol_reduced(q, qd, 0.4) # rotational rate setpoint
+    else:
+        w = 3*qcontrol_full(q, qd) # rotational rate setpoint
 
     # propagate states with minimal, ideal simulation
     q.integrate(w, dt)
